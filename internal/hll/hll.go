@@ -84,7 +84,40 @@ func (hll *HyperLogLog) Add(hash uint64) {
 
 }
 
-//TODO : Estimate() uint64
+// Implement Estimate() uint64
+func (hll *HyperLogLog) Estimate() uint64 {
+	//we want harmonic mean of all obervations, 2^r1, 2^r2, 2^r3
+	sum := 0.0
+	emptyBuckets := 0.0
+	//account for linear counting too
+	if hll.mode == SparseMode {
+		for _, packed := range hll.sparse {
+			rho := packed & (0xFF)
+			sum += 1.0 / float64((uint64(1) << rho))
+		}
+		// Every bucket not in sparse is empty i.e rho=0
+		// 2^0 is 1.0, so we just add 1.0 for every missing bucket
+		emptyBuckets = float64(hll.m - uint32(len(hll.sparse)))
+		sum += emptyBuckets
+	} else {
+		for _, rho := range hll.registers {
+			sum += 1.0 / float64((uint64(1) << rho))
+			if rho == 0 {
+				emptyBuckets++ //count this too for linear counting formula applied
+			}
+		}
+	}
+	raw := hll.alpha * float64(hll.m) * float64(hll.m) / sum
+
+	if raw <= 2.5*float64(hll.m) {
+		if emptyBuckets > 0 {
+			//linear Counting Formula: m * ln(m/V)
+			return uint64(float64(hll.m) * math.Log(float64(hll.m)/emptyBuckets))
+		}
+	}
+
+	return uint64(raw)
+}
 
 func getAlpha(m uint32) float64 {
 	switch m {
@@ -111,11 +144,27 @@ func (hll *HyperLogLog) updateSparse(index uint32, rho uint8) {
 			return
 		}
 	}
-
 	//if index is not found, simply add it
 	hll.sparse = append(hll.sparse, index<<8|uint32(rho))
 
-	//Todo: Add a trigger if sparse exceeds threshold to convert it to dense
+	//trigger if sparse exceeds threshold to convert it to dense
+	//why m/4? since size of our sparse here is 4 times size of dense
+	//(uint32 = 4 bytes; uint8 = 1 byte)
+	//so when size of sparse becomes m/4, it practically takes same amount of memory as dense of size m
+	if uint32(len(hll.sparse)) >= (hll.m)/4 {
+		hll.convertToDense()
+	}
+}
+
+func (hll *HyperLogLog) convertToDense() {
+	hll.registers = make([]uint8, hll.m)
+	for _, packed := range hll.sparse {
+		index := packed >> 8
+		value := packed & (0xFF) //or rho
+		hll.registers[index] = uint8(value)
+	}
+	hll.sparse = nil
+	hll.mode = DenseMode
 }
 
 func (hll *HyperLogLog) updateDense(index uint32, rho uint8) {
