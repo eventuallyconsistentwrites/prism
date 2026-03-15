@@ -32,10 +32,10 @@ type HyperLogLog struct {
 	mode Mode //indicates if HLL is in sparse or dense mode
 }
 
-func NewHyperLogLog(e float32) *HyperLogLog {
+func NewHyperLogLog(e float64) *HyperLogLog {
 	//the error e ≈ 1.04 / √m
 	//so we can solve for m and get the appropriate size, and compute k
-	mFloat := math.Pow(1.04/float64(e), 2)
+	mFloat := math.Pow(1.04/e, 2)
 
 	k := uint8(math.Ceil(math.Log2(mFloat)))
 
@@ -50,7 +50,6 @@ func NewHyperLogLog(e float32) *HyperLogLog {
 
 }
 
-// TODO : Add(hash uint64) -> will also have the trigger to switch to dense mode, hash will be computed by tracker from the ip addr
 func (hll *HyperLogLog) Add(hash uint64) {
 	//bucket index
 
@@ -107,16 +106,21 @@ func (hll *HyperLogLog) Estimate() uint64 {
 			}
 		}
 	}
-	raw := hll.alpha * float64(hll.m) * float64(hll.m) / sum
 
-	if raw <= 2.5*float64(hll.m) {
-		if emptyBuckets > 0 {
-			//linear Counting Formula: m * ln(m/V)
-			return uint64(float64(hll.m) * math.Log(float64(hll.m)/emptyBuckets))
-		}
+	//For very low cardinalities in sparse mode,we can use linear counting directly
+	//LogLog-Beta not very precise for cardinalities(smaller than 10,000)
+	//for now we will just use linear counting as an estimator for cardinalities upto 2.5m
+	//calculate the linear counting estimate and check if its less than 2.5m
+	lc := math.Round(float64(hll.m) * math.Log(float64(hll.m)/emptyBuckets))
+	if lc <= 2.5*float64(hll.m) && emptyBuckets > 0 {
+		return uint64(lc)
 	}
 
-	return uint64(raw)
+	//LogLog-Beta
+	//To cover for overestimates medium range(>2.5m to <=5m), LogLog-Beta uses a single unified formula:
+	//E = α * m * (m - V) / (β(V) + Σ 2^(-M[j]))
+	m := float64(hll.m)
+	return uint64(math.Round(hll.alpha * m * (m - emptyBuckets) / (betaEstimate(emptyBuckets) + sum)))
 }
 
 func getAlpha(m uint32) float64 {
@@ -130,6 +134,20 @@ func getAlpha(m uint32) float64 {
 	default:
 		return 0.7213 / (1 + 1.079/float64(m))
 	}
+}
+
+// betaEstimate computes the LogLog-Beta bias correction polynomial.
+// input ez - number of empty registers.
+func betaEstimate(ez float64) float64 {
+	zl := math.Log(ez + 1)
+	return -0.370393911*ez +
+		0.070471823*zl +
+		0.17393686*math.Pow(zl, 2) +
+		0.16339839*math.Pow(zl, 3) +
+		-0.09237745*math.Pow(zl, 4) +
+		0.03738027*math.Pow(zl, 5) +
+		-0.005384159*math.Pow(zl, 6) +
+		0.00042419*math.Pow(zl, 7)
 }
 
 func (hll *HyperLogLog) updateSparse(index uint32, rho uint8) {
