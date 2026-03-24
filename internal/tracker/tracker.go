@@ -84,21 +84,22 @@ func (t *Tracker) Track(key, ipaddr string) {
 }
 
 // called for analytics, tells the number of unique visitors on a page with standard error rate
-func (t *Tracker) Estimate(key string) (uint64, bool) {
+func (t *Tracker) Estimate(key string) (uint64, uint64, bool) { //estimate(HLL), exact(hashset)
 	//check if the key even exists
 	t.mu.RLock()
 	e, exists := t.entries[key]
 	t.mu.RUnlock()
 	if !exists {
-		return uint64(0), false //path not visited, false lets it repsond with 404
+		return uint64(0), uint64(0), false //path not visited, false lets it repsond with 404
 	}
 	e.mu.RLock()
 	val := e.hll.Estimate()
+	var exactVal uint64
 	if t.benchMarking {
-		exactVal := e.hashSet.Count()
+		exactVal = e.hashSet.Count()
 		log.Printf("Exact val is: %d", exactVal)
 	}
 	e.mu.RUnlock()
-	return uint64(val), true
+	return uint64(val), exactVal, true
 
 }

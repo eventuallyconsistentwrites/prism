@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 
 	"github.com/eventuallyconsistentwrites/prism/internal/analytics"
@@ -58,11 +59,15 @@ func main() {
 			http.Error(w, "missing target query param", http.StatusBadRequest) //throw 400
 			return
 		}
-		estimate, exists := tr.Estimate(target)
+		estimate, exact, exists := tr.Estimate(target)
 
 		if !exists {
 			fmt.Fprintf(w, "Total Unique Visitors for %s: 0\n", target)
 			return
+		}
+		//becnhmarking is on
+		if exact > 0 {
+			fmt.Fprintf(w, "HLL Estimate: %d | Exact: %d | Error: %.2f%%\n", estimate, exact, math.Abs(float64(estimate)-float64(exact))/float64(exact)*100)
 		}
 		fmt.Fprintf(w, "Total Unique Visitors for %s: %d\n", target, estimate)
 	})
